@@ -1,45 +1,49 @@
 //! Magicore kernel entry point.
 //! Called from arch-specific boot stub after early hardware init.
+//! Strict subsystem init order:
+//!   arch → mm → sched → ipc → syscall → sched.start()
 
-const arch = @import("../arch/x86_64/init.zig");
-const mm = @import("mm/mm.zig");
-const sched = @import("sched/sched.zig");
-const ipc = @import("ipc/ipc.zig");
+const std     = @import("std");
+const arch    = @import("../arch/x86_64/init.zig");
+const mm      = @import("mm/mm.zig");
+const sched   = @import("sched/sched.zig");
+const ipc     = @import("ipc/ipc.zig");
 const syscall = @import("syscall/table.zig");
 const console = @import("../lib/console.zig");
 
-/// kmain — called by arch boot stub with memory map and boot info.
-/// All subsystems are initialized here in strict dependency order.
+/// kmain — called by arch/x86_64/boot.zig with populated BootInfo.
+/// UART console is already initialized before we are called.
 pub fn kmain(boot_info: *const arch.BootInfo) noreturn {
-    // 1. Console first — needed for all subsequent diagnostics
-    console.init();
-    console.print("Magicore v0.1.0 — booting\n", .{});
+    console.print("[kmain] entering kernel\n", .{});
 
-    // 2. Architecture-level init (GDT, IDT, APIC, CPU features)
+    // 1. Architecture: GDT, IDT, CPU features
     arch.init(boot_info) catch |err| {
         console.panic("arch init failed: {}", .{err});
     };
 
-    // 3. Physical and virtual memory
-    mm.init(boot_info.memory_map) catch |err| {
+    // 2. Physical memory manager
+    mm.init(boot_info.memory_map, boot_info.hhdm_offset) catch |err| {
         console.panic("mm init failed: {}", .{err});
     };
 
-    // 4. Scheduler
+    // 3. Scheduler
     sched.init() catch |err| {
         console.panic("sched init failed: {}", .{err});
     };
+    console.print("[kmain] scheduler ready\n", .{});
 
-    // 5. IPC primitives
+    // 4. IPC
     ipc.init() catch |err| {
-        console.panic("ipc init failed: {}", .{err});
+        console.panic("ipc init: {}", .{err});
     };
+    console.print("[kmain] IPC ready\n", .{});
 
-    // 6. Syscall table
+    // 5. Syscall table
     syscall.init();
+    console.print("[kmain] syscall table ready\n", .{});
 
-    console.print("Magicore kernel ready.\n", .{});
+    console.print("[kmain] Magicore kernel ready. Entering scheduler.\n", .{});
 
-    // Hand off to scheduler — does not return
+    // Hand off to scheduler — never returns
     sched.start();
 }
