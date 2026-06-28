@@ -1,5 +1,23 @@
 # Magicore Update Log
 
+## [0.1.7] — 2026-06-28
+
+### Context switch, TSS RSP0, APIC tick preemption, IRETQ to userspace
+
+**Files changed:**
+- `arch/x86_64/context.zig` — new: `KernelContext`, `IretFrame`, `Tss`, `loadTss`, `setRsp0`, naked `switchTo`, `taskEntryTrampoline`, `buildKernelStack`
+- `kernel/sched/sched.zig` — rewrite: `Task` gains `saved_rsp`/`kstack_top`/`slice_ticks`/`pid`; real `tick()` decrements slice + re-enqueues + calls `schedule()`; `schedule()` calls `ctx.switchTo`; `registerTask()` added; `start()` enables interrupts + HLT loop
+- `arch/x86_64/apic.zig` — `apicTimerHandler` wired: calls `sched.tick()` + EOI; IDT 0x20 live
+- `arch/x86_64/init.zig` — GDT extended with TSS descriptor (0x28/0x30); `ctx.loadTss()` called; `idt_setup()` installs #PF (14) and APIC timer (0x20)
+
+**What this unlocks:**
+- Full preemptive multitasking: APIC fires every 1ms, tick decrements slice, schedule() picks next, switchTo saves/restores callee-saved regs + RSP, IRETQ jumps to userspace
+- `userspace/init/init.zig` (PID 1) will now actually run under real CPU scheduling
+- TSS.RSP0 updated on every switch so syscalls and interrupts from userspace land on the correct kernel stack
+- Time slice budgets: realtime=1ms, interactive=5ms, inference=50ms, batch=20ms
+
+---
+
 ## [0.1.6] — 2026-06-28
 
 ### VFS mount table, stdout/stderr, open/close/read/write/stat, init PID 1
@@ -11,17 +29,11 @@
 - `kernel/main.zig` — `vfs_mnt.init()` added to boot sequence between APIC and proc
 - `userspace/init/init.zig` — new: PID 1, writes "Hello from Magicore userspace!" via syscall, then exit(0)
 
-**What this unlocks:**
-- First complete end-to-end userspace path: `exec` ELF → `write(1, msg, n)` → UART output
-- `fd 0/1/2` (stdin/stdout/stderr) live in every process at birth
-- Any file in the root ramfs is openable/readable/writable from userspace
-- Foundation for shell, init system, and daemon launch
-
 ---
 
 ## [0.1.5] — 2026-06-28
 
-### SYSCALL/SYSRET, process model, fork/exec/exit/wait/getpid, ELF-64 loader
+### SYSCALL/SYSRET MSRs, process model, fork/exec/exit/wait/getpid, ELF-64 loader
 
 **Files changed:**
 - `arch/x86_64/syscall.zig` — new: STAR/LSTAR/FMASK/EFER MSR setup, naked SYSCALL entry, Zig dispatcher
@@ -51,45 +63,32 @@
 ### Physical memory manager: real buddy allocator + std.mem.Allocator bridge
 
 **Files changed:**
-- `kernel/mm/buddy.zig` — full addRegion (greedy order-fit), alloc (split-down), free (XOR coalesce); intrusive FreeNode in free pages
-- `kernel/mm/mm.zig` — wired to Limine memmap + HHDM offset; KernelAllocator bridge; buddy smoke-test
+- `kernel/mm/buddy.zig` — full addRegion, alloc (split-down), free (XOR coalesce)
+- `kernel/mm/mm.zig` — wired to Limine memmap + HHDM offset; KernelAllocator bridge
 - `kernel/sched/sched.zig` — RunQueue uses kernel_allocator
 - `kernel/main.zig` — hhdm_offset threaded through to mm.init
-
-**Tests added:** addRegion, alloc order-0, alloc+free coalesce, order-2, OOM, utilization, RunQueue O(1), Task priority
 
 ---
 
 ## [0.1.2] — 2026-06-28
 
-### Boot bring-up: Limine v8 protocol, 16550 UART, real boot stub, GDT/IDT, QEMU run target
+### Boot bring-up: Limine v8 protocol, 16550 UART, GDT/IDT, QEMU run target
 
 **Files changed:**
-- `drivers/uart16550.zig` — new: COM1 init, writeByte/writeStr/print/readByte/tryReadByte
-- `arch/x86_64/limine.zig` — new: all 6 Limine v8 request/response types in .requests section
-- `arch/x86_64/boot.zig` — rewrite: banner, memmap dump, BootInfo construction, kmain handoff
-- `arch/x86_64/init.zig` — real GDT (5 entries), IDT (32 stubs), CPUID SSE2+NX checks
-- `arch/x86_64/linker.ld` — .requests section added, KERNEL_VIRT_BASE set
-- `lib/console.zig` — new: two-phase UART-backed console, panic banner
-- `build.zig` — rewrite: iso/run/run-kvm/test targets; 22-file test suite
-- `misc/limine.conf` — new
-- `docs/boot.md` — new: full boot documentation
+- `drivers/uart16550.zig`, `arch/x86_64/limine.zig`, `arch/x86_64/boot.zig`
+- `arch/x86_64/init.zig`, `arch/x86_64/linker.ld`
+- `lib/console.zig`, `build.zig`, `misc/limine.conf`, `docs/boot.md`
 
 ---
 
 ## [0.1.1] — 2026-06-28
 
-### Foundation: kernel architecture, superiority analysis
+### Foundation: kernel architecture stubs
 
 **Files changed:**
-- `kernel/mm/` — buddy, slab, VMM stubs
-- `kernel/sched/` — O(1) bitmap scheduler, latency classes
-- `kernel/io/ring.zig` — typed I/O ring (zero opcode confusion)
-- `kernel/net/tcp.zig` — RFC 793 TCP state machine
-- `kernel/fs/ramfs.zig` — in-memory filesystem
-- `kernel/security/` — entropy, KASLR, syscall gate, verified boot
-- `security/caps.zig` — capability model
-- `docs/superiority.md` — Magicore vs Linux 7.2 technical comparison
+- `kernel/mm/`, `kernel/sched/`, `kernel/io/ring.zig`, `kernel/net/tcp.zig`
+- `kernel/fs/ramfs.zig`, `kernel/security/`, `security/caps.zig`
+- `docs/superiority.md`
 
 ---
 
@@ -98,5 +97,3 @@
 ### Initial commit: repository scaffold
 
 - `src/types.zig`, `build.zig`, `README.md`, `docs/roadmap.md`
-- Zig 0.14 freestanding x86_64 target
-- Module map established
